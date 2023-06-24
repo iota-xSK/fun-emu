@@ -9,7 +9,7 @@ use macroquad::prelude::*;
 #[macroquad::main("BasicShapes")]
 async fn main() -> io::Result<()> {
     let mut processor = MyProcessor::new();
-    let mut bus = VectorAndController::new();
+    let mut bus = TextMode::new();
 
     let args: Vec<String> = env::args().collect();
 
@@ -23,24 +23,27 @@ async fn main() -> io::Result<()> {
         Ok(file) => file,
         Err(err) => {
             println!("Error opening file: {}", err);
-            return Ok(());
+            return Err(err);
         }
     };
 
-    let mut rom = Vec::new();
-    file.read(&mut rom).expect("error: couldn't read file");
+    let rom = std::fs::read(&args[1])?;
+    // file.read(&mut rom).expect("error: couldn't read file");
+
+    println!("{:x?}", rom);
 
     for i in 0..rom.len() {
         bus.write(i as u16, rom[i])
     }
 
     loop {
-        for _ in 0..1024 {
-            // println!("instruction: {:#x}", bus.read(processor.pp));
-            // println!("pp: {:?}", processor.pp);
-            // println!("reg: {:?}", processor.r);
+        if is_key_pressed(KeyCode::Space) {
+            println!("instruction: {:#x}", bus.read(processor.pc));
+            println!("pc: {}", processor.pc);
+            println!("reg: {:?}", processor.r);
+            println!("sp: {}", processor.sp);
+            println!("{}", processor.lit_mode);
             processor.step(&mut bus);
-            // println!("{:?}", processor.pp)
         }
         clear_background(BLACK);
         bus.render();
@@ -57,15 +60,17 @@ struct MyProcessor {
     // flags
     // xxx.xuog - Underflow Overflow Greater than; x - proprietary
     // others are general purpose
-    pp: u16, // program pointer
+    pc: u16, // program pointer
     lit_mode: bool,
     lit_register: u8,
+    sp: u16,
 }
 impl MyProcessor {
     fn new() -> Self {
         Self {
             r: [0; 16],
-            pp: 0x0100,
+            pc: 0x0100,
+            sp: 1024,
             lit_mode: false,
             lit_register: 0,
         }
@@ -84,7 +89,7 @@ trait Bus {
 
 impl Processor for MyProcessor {
     fn step(&mut self, memmory: &mut impl Bus) {
-        let read = memmory.read(self.pp);
+        let read = memmory.read(self.pc);
         let addr = self.r[2] as u16 | ((self.r[1] as u16) << 8);
         let low_nibble = (read & 0xf) as usize;
         if !self.lit_mode {
@@ -93,12 +98,29 @@ impl Processor for MyProcessor {
                     self.lit_register = low_nibble as u8;
                     self.lit_mode = true;
                 }
-                0x10 => {
-                    self.pp = addr.wrapping_sub(1);
-                }
+                0x10 => match read {
+                    0x10 => self.pc = addr.wrapping_sub(1),
+                    0x11 => {
+                        self.sp = self.sp.wrapping_sub(2);
+                        memmory.write(self.sp, (self.pc & 0x00ff) as u8);
+                        memmory.write(self.sp + 1, ((self.pc & 0xff00) >> 8) as u8);
+                        // memmory.write(self.sp, (self.pc & 0x00ff) as u8);
+                        // memmory.write(self.sp + 1, ((self.pc & 0xff00) >> 8) as u8);
+                        self.pc = addr.wrapping_sub(1);
+                    }
+                    0x12 => {
+                        self.pc = memmory.read(self.sp) as u16
+                            | ((memmory.read(self.sp + 1) as u16) << 8) as u16;
+                        self.sp = self.sp.wrapping_add(2);
+                    }
+                    0x13 => {
+                        self.pc -= 1;
+                    }
+                    _ => (),
+                },
                 0x20 => {
                     if !(self.r[low_nibble] == 0) {
-                        self.pp = addr.wrapping_sub(1);
+                        self.pc = addr.wrapping_sub(1);
                     }
                 }
                 0x30 => self.r[0] = self.r[(read & 0xf) as usize],
@@ -158,11 +180,11 @@ impl Processor for MyProcessor {
             self.r[self.lit_register as usize] = read;
             self.lit_mode = false;
         }
-        self.pp = self.pp.wrapping_add(1)
+        self.pc = self.pc.wrapping_add(1)
     }
 
     fn interrupt(&mut self, addr: u16) {
-        self.pp = addr;
+        self.pc = addr;
     }
 }
 
@@ -205,10 +227,8 @@ impl Bus for ButtonLedEmu {
 
 struct TextMode {
     memory: [u8; 65536],
-    vram: [[u8; 64]; 16],
-    current_char: u8,
-    position_x: u8,
-    position_y: u8,
+    vram: [[u8; 80]; 25],
+    row: u8,
 }
 
 impl TextMode {
@@ -216,9 +236,7 @@ impl TextMode {
         Self {
             memory: array::from_fn(|_| Default::default()),
             vram: array::from_fn(|i| array::from_fn(|j| 28 + i as u8 + j as u8)),
-            current_char: 0,
-            position_x: 0,
-            position_y: 0,
+            row: 0,
         }
     }
     fn render(&self) {
@@ -238,16 +256,11 @@ impl Bus for TextMode {
     fn write(&mut self, address: u16, data: u8) {
         match address {
             0 => {
-                self.current_char = data;
-                self.vram[self.position_y as usize][self.position_x as usize] = self.current_char;
-            }
-            1 => {
-                self.memory[address as usize] = data;
-                self.position_x = data
-            }
-            2 => {
-                self.memory[address as usize] = data;
-                self.position_x = data
+                self.row = data;
+                if self.row < 80 {
+                    self.vram[self.row as usize].copy_from_slice(&self.memory[6400..6480]);
+                }
+                println!("here");
             }
             _ => {
                 self.memory[address as usize] = data;
@@ -303,16 +316,17 @@ impl Bus for VectorAndController {
 impl VectorAndController {
     fn render(&self) {
         clear_background(BLACK);
-        let mut pp: u8 = 0;
+        let mut pc: u8 = 0;
         let mut pen_down = false;
         let current_positon = Vec2::new(0.0, 0.0);
 
-        while pp < 128 {
-            match pp & 0xf0 {
+        while pc < 128 {
+            match pc & 0xf0 {
                 0 => return,
                 1 => {
                     // pos
                 }
+                _ => todo!(),
             }
         }
     }
