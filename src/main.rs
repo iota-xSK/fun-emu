@@ -1,13 +1,12 @@
+use crossterm::terminal::*;
+use crossterm::QueueableCommand;
+use crossterm::{cursor, execute, ExecutableCommand};
 use std::{
     array, env,
-    fs::File,
-    io::{self, Read},
+    io::{self, stdout, Write},
 };
 
-use macroquad::prelude::*;
-
-#[macroquad::main("BasicShapes")]
-async fn main() -> io::Result<()> {
+fn main() -> io::Result<()> {
     let mut processor = MyProcessor::new();
     let mut bus = TextMode::new();
 
@@ -18,37 +17,22 @@ async fn main() -> io::Result<()> {
         return Ok(());
     }
 
-    // Open the file
-    let mut file = match File::open(&args[1]) {
-        Ok(file) => file,
-        Err(err) => {
-            println!("Error opening file: {}", err);
-            return Err(err);
-        }
-    };
-
     let rom = std::fs::read(&args[1])?;
-    // file.read(&mut rom).expect("error: couldn't read file");
-
-    println!("{:x?}", rom);
 
     for i in 0..rom.len() {
         bus.write(i as u16, rom[i])
     }
 
-    loop {
-        if is_key_pressed(KeyCode::Space) {
-            println!("instruction: {:#x}", bus.read(processor.pc));
-            println!("pc: {}", processor.pc);
-            println!("reg: {:?}", processor.r);
-            println!("sp: {}", processor.sp);
-            println!("{}", processor.lit_mode);
-            processor.step(&mut bus);
-        }
-        clear_background(BLACK);
-        bus.render();
+    execute!(stdout(), EnterAlternateScreen)?;
 
-        next_frame().await
+    loop {
+        // println!("instruction: {:#x}", bus.read(processor.pc));
+        // println!("pc: {}", processor.pc);
+        // println!("reg: {:?}", processor.r);
+        // println!("sp: {}", processor.sp);
+        // println!("{}", processor.lit_mode);
+        processor.step(&mut bus);
+        bus.render()?;
     }
 }
 struct MyProcessor {
@@ -239,16 +223,8 @@ impl TextMode {
             row: 0,
         }
     }
-    fn render(&self) {
-        for (i, line) in self.vram.iter().enumerate() {
-            draw_text(
-                &line.map(|a| a as char).iter().collect::<String>(),
-                0.0,
-                i as f32 * 30.0 + 30.0,
-                30.0,
-                WHITE,
-            )
-        }
+    fn render(&self) -> std::io::Result<()> {
+        Ok(())
     }
 }
 
@@ -259,8 +235,18 @@ impl Bus for TextMode {
                 self.row = data;
                 if self.row < 80 {
                     self.vram[self.row as usize].copy_from_slice(&self.memory[6400..6480]);
+                    execute!(stdout(), crossterm::cursor::MoveTo(0, self.row as u16))
+                        .expect("couldn't write to stdout");
+                    write!(
+                        stdout(),
+                        "{}",
+                        self.vram[self.row as usize]
+                            .iter()
+                            .map(|a| *a as char)
+                            .collect::<String>()
+                    )
+                    .expect("couldn't write");
                 }
-                println!("here");
             }
             _ => {
                 self.memory[address as usize] = data;
@@ -270,74 +256,8 @@ impl Bus for TextMode {
 
     fn read(&mut self, address: u16) -> u8 {
         match address {
-            3 => get_last_key_pressed().unwrap_or(KeyCode::F24) as u8,
+            3 => todo!(),
             _ => self.memory[address as usize],
-        }
-    }
-}
-
-struct VectorAndController {
-    commands_read: [u8; 128],
-    commands_write: [u8; 128],
-    memory: [u8; 65536],
-    stack: [u8; 64],
-    sp: i8,
-}
-
-impl Bus for VectorAndController {
-    fn write(&mut self, address: u16, data: u8) {
-        match address {
-            0..=127 => self.commands_write[address as usize] = data,
-            128 => {
-                std::mem::swap(&mut self.commands_write, &mut self.commands_read);
-            }
-            _ => self.memory[address as usize] = data,
-        }
-    }
-
-    fn read(&mut self, address: u16) -> u8 {
-        match address {
-            0..=127 => self.commands_write[address as usize],
-            129 => {
-                is_key_down(KeyCode::Up) as u8
-                    | (is_key_down(KeyCode::Down) as u8) << 1
-                    | (is_key_down(KeyCode::Left) as u8) << 2
-                    | (is_key_down(KeyCode::Right) as u8) << 3
-                    | (is_key_down(KeyCode::W) as u8) << 4
-                    | (is_key_down(KeyCode::A) as u8) << 6
-                    | (is_key_down(KeyCode::S) as u8) << 6
-                    | (is_key_down(KeyCode::D) as u8) << 7
-            }
-            _ => self.memory[address as usize],
-        }
-    }
-}
-
-impl VectorAndController {
-    fn render(&self) {
-        clear_background(BLACK);
-        let mut pc: u8 = 0;
-        let mut pen_down = false;
-        let current_positon = Vec2::new(0.0, 0.0);
-
-        while pc < 128 {
-            match pc & 0xf0 {
-                0 => return,
-                1 => {
-                    // pos
-                }
-                _ => todo!(),
-            }
-        }
-    }
-
-    fn new() -> Self {
-        Self {
-            commands_read: [0; 128],
-            commands_write: [0; 128],
-            memory: [0; 65536],
-            stack: [0; 64],
-            sp: -1,
         }
     }
 }
