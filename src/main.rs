@@ -1,6 +1,10 @@
+use crossterm::event::poll;
+use crossterm::event::read;
 use crossterm::terminal::*;
 use crossterm::QueueableCommand;
 use crossterm::{cursor, execute, ExecutableCommand};
+use std::thread;
+use std::time::Duration;
 use std::{
     array, env,
     io::{self, stdout, Write},
@@ -32,6 +36,7 @@ fn main() -> io::Result<()> {
         // println!("sp: {}", processor.sp);
         // println!("{}", processor.lit_mode);
         processor.step(&mut bus);
+        thread::sleep(Duration::from_millis(1));
         bus.render()?;
     }
 }
@@ -256,7 +261,24 @@ impl Bus for TextMode {
 
     fn read(&mut self, address: u16) -> u8 {
         match address {
-            3 => todo!(),
+            2 => {
+                if poll(Duration::from_secs(0)).unwrap() {
+                    match read() {
+                        Ok(event) => match event {
+                            crossterm::event::Event::FocusGained => todo!(),
+                            crossterm::event::Event::FocusLost => todo!(),
+                            crossterm::event::Event::Key(_) => todo!(),
+                            _ => self.memory[2],
+                        },
+                        Err(err) => {
+                            println!("{}", err);
+                            panic!()
+                        }
+                    }
+                } else {
+                    self.memory[2]
+                }
+            }
             _ => self.memory[address as usize],
         }
     }
